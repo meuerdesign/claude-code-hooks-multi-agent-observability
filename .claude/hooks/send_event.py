@@ -27,17 +27,22 @@ from datetime import datetime
 from utils.summarizer import generate_event_summary
 from utils.model_extractor import get_model_from_transcript
 
-def send_event_to_server(event_data, server_url='http://localhost:4000/events'):
+def send_event_to_server(event_data, server_url='http://localhost:4000/events', token=None):
     """Send event data to the observability server."""
     try:
         # Prepare the request
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'Claude-Code-Hook/1.0'
+        }
+        # Token-gated ingest (e.g. obs.meuer.dev behind Caddy). Optional: when
+        # unset, posts unauthenticated (fine for a local server).
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
         req = urllib.request.Request(
             server_url,
             data=json.dumps(event_data).encode('utf-8'),
-            headers={
-                'Content-Type': 'application/json',
-                'User-Agent': 'Claude-Code-Hook/1.0'
-            }
+            headers=headers
         )
         
         # Send the request
@@ -60,10 +65,13 @@ def main():
     parser = argparse.ArgumentParser(description='Send Claude Code hook events to observability server')
     parser.add_argument('--source-app', required=True, help='Source application name')
     parser.add_argument('--event-type', required=True, help='Hook event type (PreToolUse, PostToolUse, etc.)')
-    parser.add_argument('--server-url', default='http://localhost:4000/events', help='Server URL')
+    parser.add_argument('--server-url', default=os.environ.get('OBS_SERVER_URL', 'http://localhost:4000/events'),
+                        help='Server URL (env: OBS_SERVER_URL)')
+    parser.add_argument('--token', default=os.environ.get('OBS_TOKEN'),
+                        help='Bearer token for token-gated ingest (env: OBS_TOKEN). Prefer the env var so it stays out of argv.')
     parser.add_argument('--add-chat', action='store_true', help='Include chat transcript if available')
     parser.add_argument('--summarize', action='store_true', help='Generate AI summary of the event')
-    
+
     args = parser.parse_args()
     
     try:
@@ -172,7 +180,7 @@ def main():
         # Continue even if summary generation fails
     
     # Send to server
-    success = send_event_to_server(event_data, args.server_url)
+    success = send_event_to_server(event_data, args.server_url, args.token)
     
     # Always exit with 0 to not block Claude Code operations
     sys.exit(0)

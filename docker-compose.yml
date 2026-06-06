@@ -1,0 +1,44 @@
+name: obs
+
+# Self-contained obs deployable: the Bun server (API + WS + built dashboard) and
+# a Cloudflare tunnel. NO host ports are published - cloudflared dials OUT to
+# Cloudflare, so the box has zero public inbound. Runs as a second compose
+# project alongside the telemetry stack on the same pet box.
+#
+# Secrets come from ./.env (see .env.deploy.sample):
+#   INGEST_TOKEN  - write-only bearer the agent boxes use to POST /events
+#   TUNNEL_TOKEN  - Cloudflare tunnel token (authorizes ONLY this tunnel)
+#   OBS_PUBLIC_URL / OBS_WS_URL - baked into the dashboard at build time
+
+services:
+  obs-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${OBS_PUBLIC_URL:-https://obs.example.com}
+        VITE_WS_URL: ${OBS_WS_URL:-wss://obs.example.com/stream}
+    restart: unless-stopped
+    environment:
+      INGEST_TOKEN: ${INGEST_TOKEN}     # required: rejects unauthenticated ingest
+      SERVER_PORT: "4000"
+      DB_PATH: /data/events.db
+      CLIENT_DIST: /app/client-dist
+    volumes:
+      - obs_data:/data                  # persists events.db across restarts
+    expose: ["4000"]                    # internal only; never published to host
+    networks: [obsnet]
+
+  cloudflared:
+    # TODO: pin to a specific release (matches your pin-everything convention).
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${TUNNEL_TOKEN}"]
+    depends_on: [obs-server]
+    networks: [obsnet]                  # resolves obs-server:4000 for the tunnel ingress
+
+volumes:
+  obs_data:
+
+networks:
+  obsnet:

@@ -17,6 +17,17 @@ initDatabase();
 // Store WebSocket clients
 const wsClients = new Set<any>();
 
+// Token-gated ingest. When INGEST_TOKEN is set (production, behind Cloudflare),
+// POST /events requires a matching `Authorization: Bearer <token>`. When unset
+// (local dev), ingest is open. Defense-in-depth beneath the CF WAF/Access edge.
+const INGEST_TOKEN = process.env.INGEST_TOKEN || '';
+function ingestAuthorized(req: Request): boolean {
+  if (!INGEST_TOKEN) return true; // open in local dev
+  const auth = req.headers.get('authorization') || '';
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] === INGEST_TOKEN : false;
+}
+
 // Helper function to send response to agent via WebSocket
 async function sendResponseToAgent(
   wsUrl: string,
@@ -112,7 +123,7 @@ const server = Bun.serve({
     const headers = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
     
     // Handle preflight
@@ -122,6 +133,13 @@ const server = Bun.serve({
     
     // POST /events - Receive new events
     if (url.pathname === '/events' && req.method === 'POST') {
+      // Token-gated ingest (no-op locally when INGEST_TOKEN is unset).
+      if (!ingestAuthorized(req)) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      }
       try {
         const event: HookEvent = await req.json();
         
@@ -412,7 +430,30 @@ const server = Bun.serve({
         return undefined;
       }
     }
-    
+
+    // Health check (explicit, before static fallback).
+    if (url.pathname === '/health') {
+      return new Response('ok', { headers: { ...headers, 'Content-Type': 'text/plain' } });
+    }
+
+    // Static client (production). When CLIENT_DIST is set, serve the built SPA
+    // for non-API GET routes so one service hosts both API/WS and the dashboard
+    // (same origin -> no CORS/WS cross-origin issues behind Cloudflare).
+    const CLIENT_DIST = process.env.CLIENT_DIST;
+    if (CLIENT_DIST && req.method === 'GET'
+        && !url.pathname.startsWith('/events')
+        && !url.pathname.startsWith('/api')
+        && url.pathname !== '/stream') {
+      const rel = url.pathname === '/' ? '/index.html' : url.pathname;
+      let file = Bun.file(`${CLIENT_DIST}${rel}`);
+      if (!(await file.exists())) {
+        file = Bun.file(`${CLIENT_DIST}/index.html`); // SPA fallback
+      }
+      if (await file.exists()) {
+        return new Response(file);
+      }
+    }
+
     // Default response
     return new Response('Multi-Agent Observability Server', {
       headers: { ...headers, 'Content-Type': 'text/plain' }

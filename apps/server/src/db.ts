@@ -4,7 +4,7 @@ import type { HookEvent, FilterOptions, Theme, ThemeSearchQuery } from './types'
 let db: Database;
 
 export function initDatabase(): void {
-  db = new Database('events.db');
+  db = new Database(process.env.DB_PATH || 'events.db');
   
   // Enable WAL mode for better concurrent performance
   db.exec('PRAGMA journal_mode = WAL');
